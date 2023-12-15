@@ -131,7 +131,7 @@ spec:
       serviceAccountName: multus
       containers:
       - name: kube-multus
-        image: localhost:5000/multus:e2e
+        image: ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick
         imagePullPolicy: Always
         command: [ "/usr/src/multus-cni/bin/multus-daemon" ]
         resources:
@@ -165,7 +165,7 @@ spec:
               fieldPath: spec.nodeName
       initContainers:
       - name: install-multus-shim
-        image: localhost:5000/multus:e2e
+        image: ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick
         command:
           - "cp"
           - "/usr/src/multus-cni/bin/multus-shim"

@@ -196,6 +196,14 @@ spec:
                 fieldRef:
                   fieldPath: spec.nodeName
       initContainers:
+        - name: install-cni-plugins
+          image: localhost:5000/meridio-io/cni-plugins:latest
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: cnibin
+              mountPath: /host/opt/cni/bin
+              mountPropagation: Bidirectional
         - name: install-multus-binary
           image: ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick
           command:

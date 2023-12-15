@@ -5,7 +5,7 @@
 To run the e2e test, you need the following components:
 
 - curl
-- jinjanator
+- jinjanator (`sudo apt-get install j2cli`)
 - docker
 
 ### How to test e2e
