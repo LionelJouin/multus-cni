@@ -83,12 +83,12 @@ require (
 
 replace (
 	github.com/gogo/protobuf => github.com/gogo/protobuf v1.3.2
-	k8s.io/api => k8s.io/api v0.29.0
+	k8s.io/api => /home/lionelj/Workspaces/kubernetes/kubernetes/staging/src/k8s.io/api
 	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.29.0
-	k8s.io/apimachinery => k8s.io/apimachinery v0.29.0
+	k8s.io/apimachinery => /home/lionelj/Workspaces/kubernetes/kubernetes/staging/src/k8s.io/apimachinery
 	k8s.io/apiserver => k8s.io/apiserver v0.29.0
 	k8s.io/cli-runtime => k8s.io/cli-runtime v0.29.0
-	k8s.io/client-go => k8s.io/client-go v0.29.0
+	k8s.io/client-go => /home/lionelj/Workspaces/kubernetes/kubernetes/staging/src/k8s.io/client-go
 	k8s.io/cloud-provider => k8s.io/cloud-provider v0.29.0
 	k8s.io/cluster-bootstrap => k8s.io/cluster-bootstrap v0.29.0
 	k8s.io/code-generator => k8s.io/code-generator v0.29.0
