@@ -62,6 +62,11 @@ rules:
       - '*'
     verbs:
       - '*'
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - '*'
+    verbs:
+      - '*'
   - apiGroups:
       - ""
     resources:
@@ -154,7 +159,7 @@ spec:
       serviceAccountName: multus
       containers:
         - name: kube-multus
-          image: ghcr.io/k8snetworkplumbingwg/multus-cni:snapshot-thick
+          image: localhost:5000/k8snetworkplumbingwg/multus-cni:snapshot-thick-multi-network
           command: [ "/usr/src/multus-cni/bin/multus-daemon" ]
           resources:
             requests:
