@@ -25,10 +25,12 @@ import (
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/api/networking/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/retry"
 
 	"github.com/containernetworking/cni/libcni"
 	"github.com/containernetworking/cni/pkg/skel"
@@ -98,6 +100,90 @@ func SetNetworkStatus(client *ClientInfo, k8sArgs *types.K8sArgs, netStatus []ne
 	return SetPodNetworkStatusAnnotation(client, podName, podNamespace, podUID, netStatus, conf)
 }
 
+func (c *ClientInfo) GetPodNetworkResource(name string) (*v1alpha1.PodNetwork, error) {
+	return c.Client.NetworkingV1alpha1().PodNetworks().Get(context.TODO(), name, metav1.GetOptions{})
+}
+
+// SetPodStatus sets PodIPs into Pod status
+// SetNetworkStatus updates the Pod status
+func SetNetworkStatusPodIPs(client *ClientInfo, pod *v1.Pod, statuses []nettypes.NetworkStatus) error {
+	if client == nil {
+		return fmt.Errorf("no client set")
+	}
+
+	if pod == nil {
+		return fmt.Errorf("no pod set")
+	}
+
+	var err error
+	name := pod.Name
+	namespace := pod.Namespace
+
+	multusManagedPodNetworks := map[string]*v1alpha1.PodNetwork{}
+	multusManagedPodNetworkNames := map[string]struct{}{}
+	for _, network := range pod.Spec.Networks {
+		podNetwork, _ := client.GetPodNetworkResource(network.PodNetworkName)
+		if podNetwork.Spec.Provider != "k8s.cni.cncf.io/multus" {
+			continue
+		}
+
+		for _, parametersRef := range podNetwork.Spec.ParametersRefs {
+			if parametersRef.Group != "k8s.cni.cncf.io/v1" ||
+				parametersRef.Kind != "NetworkAttachmentDefinition" {
+				continue
+			}
+			namespace := parametersRef.Namespace
+			if namespace == "" {
+				namespace = pod.Namespace
+			}
+			multusManagedPodNetworks[fmt.Sprintf("%s/%s", namespace, parametersRef.Name)] = podNetwork
+			multusManagedPodNetworkNames[podNetwork.Name] = struct{}{}
+		}
+	}
+
+	multusPodIPs := []v1.PodIP{}
+	for _, status := range statuses {
+		podNetwork, exists := multusManagedPodNetworks[status.Name]
+		if !exists {
+			continue
+		}
+
+		for _, ip := range status.IPs {
+			multusPodIPs = append(multusPodIPs, v1.PodIP{
+				IP:             ip,
+				PodNetworkName: podNetwork.Name,
+				InterfaceName:  status.Interface,
+			})
+		}
+	}
+
+	resultErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		pod, err = client.GetPod(namespace, name)
+		if err != nil {
+			return err
+		}
+
+		podIPs := []v1.PodIP{}
+		for _, podIP := range pod.Status.PodIPs {
+			_, exists := multusManagedPodNetworkNames[podIP.PodNetworkName]
+			if exists {
+				continue
+			}
+
+			podIPs = append(podIPs, podIP)
+		}
+		pod.Status.PodIPs = append(podIPs, multusPodIPs...)
+
+		_, err = client.Client.CoreV1().Pods(namespace).UpdateStatus(context.TODO(), pod, metav1.UpdateOptions{})
+		return err
+	})
+	if resultErr != nil {
+		return fmt.Errorf("status update failed for pod %s/%s: %v", pod.Namespace, pod.Name, resultErr)
+	}
+
+	return nil
+}
+
 // SetPodNetworkStatusAnnotation sets network status into Pod annotation
 func SetPodNetworkStatusAnnotation(client *ClientInfo, podName string, podNamespace string, podUID string, netStatus []nettypes.NetworkStatus, conf *types.NetConf) error {
 	var err error
@@ -129,6 +215,10 @@ func SetPodNetworkStatusAnnotation(client *ClientInfo, podName string, podNamesp
 		err = netutils.SetNetworkStatus(client.Client, pod, netStatus)
 		if err != nil {
 			return logging.Errorf("SetPodNetworkStatusAnnotation: failed to update the pod %v in out of cluster comm: %v", podName, err)
+		}
+		err = SetNetworkStatusPodIPs(client, pod, netStatus)
+		if err != nil {
+			return logging.Errorf("SetPodNetworkStatusAnnotation: failed to update the pod status %v in out of cluster comm: %v", podName, err)
 		}
 	}
 
@@ -341,7 +431,7 @@ func TryLoadPodDelegates(pod *v1.Pod, conf *types.NetConf, clientInfo *ClientInf
 		conf.Delegates[0] = delegate
 	}
 
-	networks, err := GetPodNetwork(pod)
+	networks, err := GetPodNetwork(clientInfo, pod)
 	if networks != nil {
 		delegates, err := GetNetworkDelegates(clientInfo, pod, networks, conf, resourceMap)
 
@@ -382,21 +472,44 @@ func TryLoadPodDelegates(pod *v1.Pod, conf *types.NetConf, clientInfo *ClientInf
 	return 0, clientInfo, err
 }
 
-// GetPodNetwork gets net-attach-def annotation from pod
-func GetPodNetwork(pod *v1.Pod) ([]*types.NetworkSelectionElement, error) {
-	logging.Debugf("GetPodNetwork: %v", pod)
+// plw changes here
+func parseNetworksFromPod(client *ClientInfo, namespace string, networksFromPod []v1.Network, defaultNamespace string) ([]*types.NetworkSelectionElement, error) {
+	var networks []*types.NetworkSelectionElement
 
-	netAnnot := pod.Annotations[networkAttachmentAnnot]
-	defaultNamespace := pod.ObjectMeta.Namespace
+	for _, network := range networksFromPod {
 
-	if len(netAnnot) == 0 {
-		return nil, &NoK8sNetworkError{"no kubernetes network found"}
+		logging.Errorf("Reading PodNetwork: %s", network.PodNetworkName)
+		podNetwork, err := client.GetPodNetworkResource(network.PodNetworkName)
+		if err != nil {
+			return nil, err
+		}
+
+		if podNetwork.Spec.Provider != "k8s.cni.cncf.io/multus" {
+			continue
+		}
+
+		networks = append(networks, &types.NetworkSelectionElement{
+			Name:             podNetwork.Spec.ParametersRefs[0].Name,
+			Namespace:        podNetwork.Spec.ParametersRefs[0].Namespace,
+			InterfaceRequest: network.InterfaceName,
+		})
 	}
 
-	networks, err := parsePodNetworkAnnotation(netAnnot, defaultNamespace)
+	return networks, nil
+}
+
+// GetPodNetwork gets net-attach-def annotation from pod
+func GetPodNetwork(client *ClientInfo, pod *v1.Pod) ([]*types.NetworkSelectionElement, error) {
+	logging.Debugf("GetPodNetwork: %v", pod)
+
+	defaultNamespace := pod.ObjectMeta.Namespace
+	networksFromPod := pod.Spec.Networks
+
+	networks, err := parseNetworksFromPod(client, defaultNamespace, networksFromPod, defaultNamespace)
 	if err != nil {
 		return nil, err
 	}
+
 	return networks, nil
 }
 
